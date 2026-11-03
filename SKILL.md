@@ -282,6 +282,17 @@ replies often carry the actual instruction while the root is only a pointer.
 
 Comments are per file. Moving content to a new file leaves them behind.
 
+### The review loop, when asked to "read my comments"
+
+1. **Fetch** the comments and group them into threads. Skip resolved ones (`resolved_at` set).
+2. **Map** each thread to its frame through `client_meta`, as above.
+3. **Confirm before drawing:** list each comment, the frame it maps to, and the planned change, in one short table. A comment pinned on empty canvas, or one that is ambiguous, gets a question instead of a guess.
+4. **Apply** the changes to the existing frames. Through the MCP (`use_figma`) the canvas updates directly. Through a development plugin, edit its code on disk, bump the build stamp, and ask the person to run the plugin again.
+5. **Verify** with `get_metadata` and a screenshot (see *Measure, do not look*). On the plugin route, check that the closing toast shows the new stamp before trusting the canvas.
+6. **Report** comment by comment what changed. If the token has the write scope and the person wants it, reply in each thread. Leave resolving comments to the person.
+
+**When to ask for a re-import** (plugin route only): when the toast shows a stale stamp, or "replaced 0" while frames are visible. Ask them to remove the plugin, import its `manifest.json` again and reopen the tab. If that fails, change the manifest `id` (see *One plugin, one job*).
+
 ---
 
 ## Screenshots at scale

@@ -41,6 +41,55 @@ Free and open source (MIT). It works with [Claude Code](https://claude.com/claud
 3. **Optionally, let Claude read your comments.** Create a Figma personal access token with the **File comments: Read** scope, then save it to `~/.figma-token` (`chmod 600`). Never paste it into a chat.
 4. **Restart Claude Code.** The skill loads itself whenever you ask Claude to build or fix something in Figma.
 
+## The review loop: comment in Figma, Claude updates the design
+
+You review in Figma the way you would with a designer. You leave comments on the canvas, and Claude reads them and changes the design.
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant Figma
+    participant Claude
+    You->>Figma: Pin comments on the frames
+    You->>Claude: "Read my comments"
+    Claude->>Figma: Fetch comments (REST API, your token)
+    Claude->>Figma: Fetch frame geometry (MCP get_metadata)
+    Claude->>You: Each comment matched to its frame, with the planned change
+    Claude->>Figma: Apply the changes (MCP use_figma, or plugin code)
+    Claude->>Figma: Screenshot and measure the result
+    Claude->>You: What changed, comment by comment
+    You->>Figma: Check, comment again, repeat
+```
+
+**1. You comment.** Pin each comment on the frame it's about, not on empty canvas. Claude uses the pin's position to find the frame. Replies in a thread are read too, and the instruction is often in the reply.
+
+**2. You ask.** Say *"read my comments"* in Claude Code, with the file link if Claude doesn't have it yet.
+
+**3. Claude reads and matches.**
+- It fetches the comments from Figma's REST API with your token. No MCP tool can read comments.
+- It groups the replies into their threads.
+- It matches each pin to the frame underneath, using the file's geometry.
+- It tells you which comment it will apply to which frame, so a misread shows up before anything is drawn.
+
+**4. Claude updates the design.** It edits the frames in place, or rebuilds and replaces its own frames, so you never end up with duplicates. Then it screenshots and measures the result. It reports back comment by comment. Resolving the comments in Figma stays your job. With the **File comments: Write** scope added to your token, Claude can also reply in each thread.
+
+**5. You check, and comment again.** Repeat until it's approved.
+
+Comments belong to a file. If the work moves to a new file, the old comments stay behind, so finish or copy them over first.
+
+### Do I need to re-import anything?
+
+That depends on how Claude edits your file.
+
+| Route | What you do after each change | When you re-import |
+|---|---|---|
+| **Figma MCP** (`use_figma`), the default | Nothing. Claude runs the code in your open file, and the canvas updates. | Never. |
+| **Your own development plugin** (for builds too big for one MCP call) | Run the plugin again: Plugins → Development → *your plugin*. Claude edits the plugin's code on your machine, and Figma runs whatever is on disk. | When the closing message shows an **old build stamp**, or reports **"replaced 0"** while frames are visible. That means Figma is running a cached copy. Remove the plugin, import it again from its `manifest.json` (Plugins → Development → Import plugin from manifest), then reopen the file tab. If that still doesn't help, Claude changes the plugin's `id` in the manifest to force a clean load. |
+
+On the plugin route, every run ends with a message such as `Build 15:03 — replaced 12 frames`. Check the stamp first. If the time doesn't match the build Claude just made, you're looking at the old version, whatever the canvas shows.
+
+Development plugins need the Figma desktop app.
+
 ## What's inside
 
 - The verification loop: a build stamp, clearing your own output, and counting replaced frames
