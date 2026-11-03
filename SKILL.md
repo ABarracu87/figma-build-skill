@@ -31,6 +31,11 @@ Without this, a plugin that re-creates frames stacks a second set on top of the
 first and nothing tells you which you are looking at. Counting copies of a
 frame name is how you prove whether a run happened at all.
 
+**Clear-and-rebuild is for first builds only.** Once a file is under review,
+comments are pinned to node ids. Removing a frame and drawing a new one orphans
+every comment on it. During a review round, edit existing nodes in place (see
+*The review loop*).
+
 ---
 
 ## One bad value kills the whole build
@@ -170,6 +175,9 @@ the last block should end exactly at the page height.
 
 ## Simulating the plugin locally
 
+`tools/figma_stub.js` in this skill is a ready strict stub; `node
+tools/test_figma_stub.js` proves it still throws where Figma throws.
+
 A stub of the `figma` global catches throws, null appends and structural
 mistakes before a round-trip. It cannot emulate text metrics, so it proves the
 code runs, never that the layout is right.
@@ -258,10 +266,20 @@ The MCP exposes `get_metadata`, `get_design_context`, `get_screenshot`,
 `get_figjam`, `use_figma` — **none of them read comments**, and the Plugin API
 has no comments access either. Comments live in the REST API.
 
+Use `tools/figma_comments.py` in this skill folder (Python 3, standard library):
+
 ```bash
-curl -s -H "X-Figma-Token: $TOKEN" \
-  "https://api.figma.com/v1/files/$KEY/comments"
+T=~/.claude/skills/figma-build/tools/figma_comments.py
+python3 $T check <file-url>            # OK: token reads comments (N on file KEY)
+python3 $T fetch <file-url>            # open threads as JSON, ledger and resolved filtered out
+python3 $T mark  <file-url> ID... --change "what changed"
+python3 $T reply <file-url> ROOT_ID "Done: logo 20% bigger"   # needs the write scope
 ```
+
+It reads the token from `~/.figma-token` and never prints it. Run it from the work
+folder so the ledger lands there, or set `FIGMA_LEDGER`. There is no delete command.
+If it reports an SSL certificate failure, the Python has no root certificates:
+run `/usr/bin/python3` instead, or `pip install certifi`.
 
 Scope: **File comments → Read**. Store the token in a file (`~/.figma-token`,
 chmod 600), never in the conversation. If the person cannot run a shell command,
@@ -284,13 +302,13 @@ Comments are per file. Moving content to a new file leaves them behind.
 
 ### The review loop, when asked to "read my comments"
 
-1. **Fetch** the comments and group them into threads. Skip resolved ones (`resolved_at` set) and every id already in the handled ledger (below). Old comments stay in the file until they're resolved, so without these two filters every review, and every later conversation, re-applies the previous round's feedback.
+1. **Fetch** with `figma_comments.py fetch`, which groups comments into threads. Skip resolved ones (`resolved_at` set) and every id already in the handled ledger (below). Old comments stay in the file until they're resolved, so without these two filters every review, and every later conversation, re-applies the previous round's feedback.
 2. **Map** each thread to its frame through `client_meta`, as above.
 3. **Confirm before drawing:** list each comment, the frame it maps to, and the planned change, in one short table. A comment pinned on empty canvas, or one that is ambiguous, gets a question instead of a guess.
-4. **Apply** the changes to the existing frames. Through the MCP (`use_figma`) the canvas updates directly. Through a development plugin, edit its code on disk, bump the build stamp, and ask the person to run the plugin again.
+4. **Apply** the changes **in place**: change the properties of the existing nodes, keeping their ids. Never remove and redraw a commented frame, because that orphans its comments. Through the MCP (`use_figma`) the canvas updates directly. Through a development plugin, edit its code on disk, bump the build stamp, and ask the person to run the plugin again.
 5. **Verify** with `get_metadata` and a screenshot (see *Measure, do not look*). On the plugin route, check that the closing toast shows the new stamp before trusting the canvas.
 6. **Report** comment by comment what changed. If the token has the write scope and the person wants it, reply in each thread.
-7. **Record** every handled comment id (thread roots and replies) in the ledger before the turn ends, including ones you only answered with a question.
+7. **Record** every handled comment id (thread roots and replies) with `figma_comments.py mark` before the turn ends, including ones you only answered with a question.
 8. **Never delete comments**, even when asked to clean up. They are the review record. Old feedback stays out of later rounds through the ledger, not by deleting it. If a round needs clearing in Figma, the person resolves the comments.
 
 **The handled ledger.** A JSON file next to the work: `figma/comments-handled.json` in a campaign folder, otherwise `figma-comments-handled.json` in the working directory. Read it at the start of every review, including in a new conversation.

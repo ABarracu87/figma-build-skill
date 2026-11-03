@@ -1,132 +1,174 @@
 # figma-build-skill
 
-## Catch the Figma mistakes that never throw an error.
+A Claude Code skill and two small tools for building in Figma with code, and for running design review through Figma comments.
 
-When Claude builds in Figma, most failures are silent. Text collapses to 10 px, cards shrink to a sliver, frames land on top of your work, and nothing warns you. This skill teaches Claude those failures before it writes the first line, so you review designs, not broken canvases.
+Most failures in Figma automation are silent. A text node collapses to 10 px, an auto-layout column shrinks to a sliver, a build aborts halfway, a frame lands on top of existing work. Figma accepts the call and draws the wrong thing. This skill gives Claude the rules that avoid those failures. Its tools read review comments, which the Figma MCP cannot do.
+
+- **The skill** (`SKILL.md`) holds the rules Claude follows when it writes Figma code.
+- **`tools/figma_comments.py`** reads comment threads, keeps a ledger of handled feedback and replies in threads. It has no delete command.
+- **`tools/figma_stub.js`** is a strict local stub of the Plugin API, for running plugin code before it reaches Figma.
+
+## Contents
+
+- [How it works](#how-it-works)
+- [The review loop](#the-review-loop)
+- [Components](#components)
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Daily use](#daily-use)
+- [Repository layout](#repository-layout)
+- [Design decisions and limits](#design-decisions-and-limits)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+
+## How it works
+
+Claude Code loads the skill when a task involves building or fixing something in Figma. Claude reaches Figma through two channels, plus an optional third:
+
+| Channel | Used for | Why |
+|---|---|---|
+| **Figma MCP** (`use_figma`, `get_metadata`, `get_screenshot`) | Building and editing frames, reading geometry, screenshots | The standard way for Claude to run code in your open file |
+| **Figma REST API** with your token (`tools/figma_comments.py`) | Reading comment threads, replying | Neither the MCP nor the Plugin API can read comments |
+| **Your own development plugin** (optional) | Builds too large for one MCP call | It runs the same Plugin API code, started by you from Figma |
+
+The skill covers what both code routes get wrong: the order of text properties, auto-layout sizing axes, circular constraints, clamping values, font loading, drawing position, build stamps and verifying by geometry.
+
+## The review loop
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor You
+  participant Figma as Figma file
+  participant Claude as Claude Code
+  participant Tool as figma_comments.py
+  participant Ledger as handled ledger
+
+  You->>Figma: Pin comments on frames
+  You->>Claude: "read my comments"
+  Claude->>Tool: fetch <file>
+  Tool->>Figma: GET /v1/files/:key/comments
+  Tool->>Ledger: drop handled ids
+  Tool-->>Claude: open threads, with node_id and offset
+  Claude->>Figma: get_metadata, to map each pin to its frame
+  Claude-->>You: Table: comment, frame, planned change
+  Claude->>Figma: Edit nodes in place (ids kept)
+  Claude->>Figma: Measure and screenshot
+  Claude->>Tool: mark <ids> --change "..."
+  Tool->>Ledger: record handled ids
+  Claude-->>You: What changed, comment by comment
+```
+
+1. **Comment.** Pin each comment on the frame it's about. Instructions in thread replies are read too.
+2. **Fetch.** The tool returns open threads, with replies in order. It leaves out resolved threads and everything already in the ledger.
+3. **Map and confirm.** Claude matches each pin to its frame, using the file's geometry. Before drawing anything, it shows a table of comment, frame and planned change. An ambiguous comment gets a question, not a guess.
+4. **Edit in place.** Claude changes properties on the existing nodes and keeps their ids. Comments are pinned to node ids, so redrawing a frame would orphan them.
+5. **Verify.** Claude checks the result by geometry and a screenshot.
+6. **Record.** Every handled comment id goes to the ledger, so the next review, or the next conversation, doesn't apply it again.
+7. **Report.** Claude summarises comment by comment. With the write scope, it can also reply in each thread.
+
+Comments are never deleted. They are your review record, and resolving them stays with you.
+
+## Components
+
+| Component | File | Role |
+|---|---|---|
+| Rules | `SKILL.md` | What Claude follows when writing Figma code, plus the review loop |
+| Comments client | `tools/figma_comments.py` | `check`, `fetch`, `mark`, `reply`, `selftest`. Keeps the ledger. No delete command |
+| Plugin API stub | `tools/figma_stub.js` | Throws where Figma throws: negative sizes, unloaded fonts, null children. Seeds existing frames. Approximates auto-layout heights |
+| Stub test | `tools/test_figma_stub.js` | Proves the stub is still strict |
+| Ledger | `figma-comments-handled.json`, in your work folder | Comment ids already handled, with what changed |
+
+## Requirements
+
+- [Claude Code](https://claude.com/claude-code)
+- The Figma connector in Claude (claude.ai → Settings → Connectors → Figma), with edit access to the file
+- For comments: Python 3 (standard library only) and a Figma personal access token with **File comments: Read**. Add **File comments: Write** only if you want replies in threads.
+- For the stub: Node.js
+- For a development plugin: the Figma desktop app
+
+## Setup
 
 ```bash
 git clone https://github.com/ABarracu87/figma-build-skill ~/.claude/skills/figma-build
 ```
 
-Free and open source (MIT). It works with [Claude Code](https://claude.com/claude-code) and the official Figma MCP.
+1. **Token.** Figma → Settings → Security → Personal access tokens. Save it as one line in `~/.figma-token`, then run `chmod 600 ~/.figma-token`.
+2. **Check the token:**
+   ```bash
+   python3 ~/.claude/skills/figma-build/tools/figma_comments.py check <figma-file-url>
+   ```
+   It should print `OK: token reads comments (N on file KEY)`.
+3. **Check the tools:**
+   ```bash
+   python3 ~/.claude/skills/figma-build/tools/figma_comments.py selftest   # selftest PASS
+   node ~/.claude/skills/figma-build/tools/test_figma_stub.js               # stub test PASS
+   ```
+4. **Restart Claude Code.**
 
----
+## Daily use
 
-## What it fixes
+| You say | What happens |
+|---|---|
+| "Build the wireframes for this page in Figma: <file>" | A first build, below any existing work, with a build stamp |
+| "Read my comments" | The review loop above |
+| "Why does this frame look collapsed?" | Claude measures the geometry and names the rule that was broken |
+| "Test this plugin locally" | The plugin runs against the strict stub before you import it |
 
-| What you see | What actually went wrong | What the skill makes Claude do |
-|---|---|---|
-| Text boxes about 10 px tall, and the frames around them collapsed | Figma only re-measures text when its content changes | Set text properties in the one order that works |
-| Cards about 45 px wide, copy wrapping one letter per line | A circular auto-layout constraint, resolved at the minimum | Give rows explicit widths instead of relying on stretch |
-| A row that won't grow, however wide you set it | On horizontal frames the fixed width lands on the wrong axis | Pick the sizing axis by frame direction |
-| A half-drawn page that looks like a layout bug | One negative width or unloaded font aborted the whole build | Clamp every size, and resolve fonts through a fallback chain |
-| New frames stacked on top of existing work | The build started at (0, 0) | Measure the page and start below what's there |
-| "It looks the same" after a change | A cached bundle, or a run that never happened | Stamp every build and count what it replaced |
-| Your Figma comments ignored | No MCP tool and no plugin API reads comments | Read them through Figma's REST API and map each one to its frame |
-| Dozens of screenshot calls | One capture per block | One capture per page, cropped locally |
+By hand:
 
-## Why you want it on top of the Figma MCP
-
-**The MCP gives Claude hands.** It reads your file and runs code in it. When that code is subtly wrong, Figma usually accepts it and draws the wrong thing. There's no error, so Claude has nothing to learn from, and it rediscovers the same mistakes in every new session.
-
-**The skill gives Claude the experience.** It's a plain-text list of every failure above and what to do instead. Claude reads it the moment a Figma task starts.
-
-- **It stays out of the way.** Until a Figma task triggers it, only its one-line description sits in Claude's context.
-- **You can extend it.** Hit a new silent failure? Add it to `SKILL.md`, and Claude won't repeat it.
-
-## Setup
-
-1. **Install the skill:** `git clone https://github.com/ABarracu87/figma-build-skill ~/.claude/skills/figma-build`
-2. **Connect Figma** in Claude: claude.ai → Settings → Connectors → Figma. Your own Figma plugin works too.
-3. **Optionally, let Claude read your comments.** Create a Figma personal access token with the **File comments: Read** scope. Add **File comments: Write** only if you want Claude to reply in threads. Save it to `~/.figma-token` (`chmod 600`), and never paste it into a chat.
-4. **Restart Claude Code.** The skill loads itself whenever you ask Claude to build or fix something in Figma.
-
-## The review loop: comment in Figma, Claude updates the design
-
-You review in Figma the way you would with a designer. You leave comments on the canvas, and Claude reads them and changes the design.
-
-```mermaid
-sequenceDiagram
-    actor You
-    participant Figma
-    participant Claude
-    You->>Figma: Pin comments on the frames
-    You->>Claude: "Read my comments"
-    Claude->>Figma: Fetch comments (REST API, your token)
-    Claude->>Figma: Fetch frame geometry (MCP get_metadata)
-    Claude->>You: Each comment matched to its frame, with the planned change
-    Claude->>Figma: Apply the changes (MCP use_figma, or plugin code)
-    Claude->>Figma: Screenshot and measure the result
-    Claude->>You: What changed, comment by comment
-    Claude->>Claude: Add the comments to the handled list
-    You->>Figma: Check, comment again, repeat
+```bash
+T=~/.claude/skills/figma-build/tools/figma_comments.py
+python3 $T fetch <file-url>                 # open threads as JSON
+python3 $T fetch <file-url> --all           # everything, resolved and handled included
+python3 $T mark  <file-url> 123 124 --change "Logo 20% bigger on the story format"
+python3 $T reply <file-url> 123 "Done: logo is now 20% bigger"
 ```
 
-**1. You comment.** Pin each comment on the frame it's about, not on empty canvas. Claude uses the pin's position to find the frame. Replies in a thread are read too, and the instruction is often in the reply.
+Run it from your work folder so the ledger lands there, or set `FIGMA_LEDGER=/path/to/ledger.json`.
 
-**2. You ask.** Say *"read my comments"* in Claude Code, with the file link if Claude doesn't have it yet.
+## Repository layout
 
-**3. Claude reads and matches.**
-- It fetches the comments from Figma's REST API with your token. No MCP tool can read comments.
-- It groups the replies into their threads.
-- It matches each pin to the frame underneath, using the file's geometry.
-- It tells you which comment it will apply to which frame, so a misread shows up before anything is drawn.
+```
+SKILL.md                    rules for Figma code and the review loop
+tools/
+  figma_comments.py         comments client: check, fetch, mark, reply, selftest
+  figma_stub.js             strict Plugin API stub
+  test_figma_stub.js        stub test
+LICENSE
+```
 
-**4. Claude updates the design.** It edits the frames in place, or rebuilds and replaces its own frames, so you never end up with duplicates. Then it screenshots and measures the result. It reports back comment by comment. With the **File comments: Write** scope on your token, Claude can also reply in each thread.
+## Design decisions and limits
 
-**5. Claude closes the round.** Old comments stay in the file, so a later review, or a later conversation, would read them again and re-apply old feedback. To prevent that, Claude adds every comment it acted on to `figma-comments-handled.json` next to the work, and skips those from then on. It skips resolved comments too.
+- **A skill, not a server.** The rules are plain text. Until a Figma task triggers it, only the skill's description sits in Claude's context. To fix a rule, edit `SKILL.md`.
+- **Edit in place during review.** Clear-and-rebuild suits first builds only. Once comments exist, redrawing a frame orphans them.
+- **A ledger, not deletion.** Figma's API has no endpoint for resolving comments, and its delete endpoint only works on your own comments. The ledger keeps old feedback out of later rounds without touching the review record.
+- **Mapping by geometry.** A comment's `node_offset` is matched to the child frame whose area contains it. A comment pinned on empty canvas can't be matched, so Claude asks.
+- **The stub has no text metrics.** It proves the code runs without throwing, not that the layout is right. The geometry checks in `SKILL.md` cover layout.
+- **The plugin route needs a click per run.** Development plugins can't be started from outside Figma.
+- **Comments belong to a file.** Moving work to a new file leaves its comments behind.
 
-**Claude never deletes comments.** They're your review record. Resolve them in Figma whenever you like.
+## Security
 
-**6. You check, and comment again.** Repeat until it's approved.
+- The token is read from `~/.figma-token` (or `$FIGMA_TOKEN_FILE`). It is never printed, and never put on a command line or in a URL.
+- The token only needs comment scopes. File content access isn't required.
+- The ledger holds comment ids and short change notes, not comment text. Keep it out of public repos anyway, because it contains your file key.
 
-Comments belong to a file. If the work moves to a new file, the old comments stay behind, so finish or copy them over first.
+## Troubleshooting
 
-### Do I need to re-import anything?
+| Symptom | Cause and fix |
+|---|---|
+| `no token at ~/.figma-token` | Save the token as one line in that file |
+| `HTTP 403` on `check` | The token lacks **File comments: Read**, or your account can't open the file |
+| `HTTP 403` on `reply` | Replying needs **File comments: Write** |
+| `SSL certificate check failed` | This Python has no root certificates. Use `/usr/bin/python3`, run `Install Certificates.command` from your Python folder, or `pip install certifi` |
+| `/v1/me` returns 403 | Expected with a comments-only token. The token is fine |
+| Old feedback applied again | Run from the folder that holds the ledger, or set `FIGMA_LEDGER` |
+| Text 10 px tall, frames collapsed | Text properties set in the wrong order. See *Text sizing* in `SKILL.md` |
+| Copy wrapping one letter per line | A circular auto-layout constraint. See *A column that fills a row* |
+| Plugin toast shows an old build stamp, or "replaced 0" with frames visible | Figma is running a cached plugin. Remove it, import `manifest.json` again and reopen the tab. If that fails, change the manifest `id` |
+| A comment no longer points at its frame | The frame was redrawn instead of edited in place. Review edits must keep node ids |
 
-That depends on how Claude edits your file.
+## License
 
-| Route | What you do after each change | When you re-import |
-|---|---|---|
-| **Figma MCP** (`use_figma`), the default | Nothing. Claude runs the code in your open file, and the canvas updates. | Never. |
-| **Your own development plugin** (for builds too big for one MCP call) | Run the plugin again: Plugins → Development → *your plugin*. Claude edits the plugin's code on your machine, and Figma runs whatever is on disk. | When the closing message shows an **old build stamp**, or reports **"replaced 0"** while frames are visible. That means Figma is running a cached copy. Remove the plugin, import it again from its `manifest.json` (Plugins → Development → Import plugin from manifest), then reopen the file tab. If that still doesn't help, Claude changes the plugin's `id` in the manifest to force a clean load. |
-
-On the plugin route, every run ends with a message such as `Build 15:03 — replaced 12 frames`. Check the stamp first. If the time doesn't match the build Claude just made, you're looking at the old version, whatever the canvas shows.
-
-Development plugins need the Figma desktop app.
-
-## What's inside
-
-- The verification loop: a build stamp, clearing your own output, and counting replaced frames
-- Clamping the values that would abort a build
-- Never drawing on top of existing work
-- Text sizing, in the only order that works
-- Auto-layout sizing axes, and the column that fills a row
-- Measuring geometry instead of eyeballing screenshots
-- A strict local stub of the `figma` global, for testing plugin code before the round trip
-- Font loading and per-family style names
-- One plugin, one job, and forcing a clean reload
-- Reading Figma comments through the REST API
-- Screenshots at scale
-
-## Frequently asked questions
-
-**Does it replace the Figma MCP?**
-No. The MCP is how Claude reaches your file, and the skill is how it avoids the mistakes. Use both.
-
-**Does it work with my own Figma plugin?**
-Yes. The rules are about the Figma Plugin API itself. They apply whether the code runs through the MCP or through your plugin.
-
-**Does it need a Figma token?**
-Only for reading comments. Everything else works through the Figma connector.
-
-**Can I change it?**
-Yes. It's one markdown file. Edit it, and Claude follows your version.
-
-## Need whole ad campaigns, not just builds?
-
-[ai-campaign-kit](https://github.com/ABarracu87/ai-campaign-kit) uses this skill to turn one brief into every static format, every language and a motion version, in your brand's voice.
-
----
-
-MIT licence.
+[MIT](LICENSE)
