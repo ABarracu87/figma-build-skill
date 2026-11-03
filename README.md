@@ -38,7 +38,7 @@ Free and open source (MIT). It works with [Claude Code](https://claude.com/claud
 
 1. **Install the skill:** `git clone https://github.com/ABarracu87/figma-build-skill ~/.claude/skills/figma-build`
 2. **Connect Figma** in Claude: claude.ai → Settings → Connectors → Figma. Your own Figma plugin works too.
-3. **Optionally, let Claude read your comments.** Create a Figma personal access token with the **File comments: Read** scope, then save it to `~/.figma-token` (`chmod 600`). Never paste it into a chat.
+3. **Optionally, let Claude read your comments.** Create a Figma personal access token with the **File comments: Read** scope. Add **File comments: Write** if Claude should also reply and delete handled comments. Save it to `~/.figma-token` (`chmod 600`), and never paste it into a chat.
 4. **Restart Claude Code.** The skill loads itself whenever you ask Claude to build or fix something in Figma.
 
 ## The review loop: comment in Figma, Claude updates the design
@@ -58,6 +58,8 @@ sequenceDiagram
     Claude->>Figma: Apply the changes (MCP use_figma, or plugin code)
     Claude->>Figma: Screenshot and measure the result
     Claude->>You: What changed, comment by comment
+    Claude->>Claude: Add the comments to the handled list
+    Claude->>Figma: Delete the round's comments, after your OK
     You->>Figma: Check, comment again, repeat
 ```
 
@@ -71,9 +73,13 @@ sequenceDiagram
 - It matches each pin to the frame underneath, using the file's geometry.
 - It tells you which comment it will apply to which frame, so a misread shows up before anything is drawn.
 
-**4. Claude updates the design.** It edits the frames in place, or rebuilds and replaces its own frames, so you never end up with duplicates. Then it screenshots and measures the result. It reports back comment by comment. Resolving the comments in Figma stays your job. With the **File comments: Write** scope added to your token, Claude can also reply in each thread.
+**4. Claude updates the design.** It edits the frames in place, or rebuilds and replaces its own frames, so you never end up with duplicates. Then it screenshots and measures the result. It reports back comment by comment. With the **File comments: Write** scope on your token, Claude can also reply in each thread.
 
-**5. You check, and comment again.** Repeat until it's approved.
+**5. Claude clears the round.** Old comments stay in the file until someone resolves or deletes them, so a later review, or a later conversation, would read them again and re-apply old feedback. Claude prevents that in two ways:
+- **It keeps a handled list.** Every comment it acted on goes into `figma-comments-handled.json` next to the work, and is skipped from then on. Resolved comments are skipped too.
+- **It offers to delete the round's comments.** It deletes them only after you confirm, because deletion is permanent. This needs the **File comments: Write** scope, and Figma only lets you delete comments you wrote yourself. A teammate's comments stay on the handled list, and their author can resolve them.
+
+**6. You check, and comment again.** Repeat until it's approved.
 
 Comments belong to a file. If the work moves to a new file, the old comments stay behind, so finish or copy them over first.
 
