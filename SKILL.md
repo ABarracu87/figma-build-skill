@@ -284,14 +284,14 @@ Comments are per file. Moving content to a new file leaves them behind.
 
 ### The review loop, when asked to "read my comments"
 
-1. **Fetch** the comments and group them into threads. Skip resolved ones (`resolved_at` set) and every id already in the handled ledger (below). Old comments stay in the file until they're resolved or deleted, so without these two filters every review, and every later conversation, re-applies the previous round's feedback.
+1. **Fetch** the comments and group them into threads. Skip resolved ones (`resolved_at` set) and every id already in the handled ledger (below). Old comments stay in the file until they're resolved, so without these two filters every review, and every later conversation, re-applies the previous round's feedback.
 2. **Map** each thread to its frame through `client_meta`, as above.
 3. **Confirm before drawing:** list each comment, the frame it maps to, and the planned change, in one short table. A comment pinned on empty canvas, or one that is ambiguous, gets a question instead of a guess.
 4. **Apply** the changes to the existing frames. Through the MCP (`use_figma`) the canvas updates directly. Through a development plugin, edit its code on disk, bump the build stamp, and ask the person to run the plugin again.
 5. **Verify** with `get_metadata` and a screenshot (see *Measure, do not look*). On the plugin route, check that the closing toast shows the new stamp before trusting the canvas.
 6. **Report** comment by comment what changed. If the token has the write scope and the person wants it, reply in each thread.
 7. **Record** every handled comment id (thread roots and replies) in the ledger before the turn ends, including ones you only answered with a question.
-8. **Clean up.** Offer to delete the handled comments, and delete only after the person confirms in this session. Deletion is permanent and removes the review history from Figma.
+8. **Never delete comments**, even when asked to clean up. They are the review record. Old feedback stays out of later rounds through the ledger, not by deleting it. If a round needs clearing in Figma, the person resolves the comments.
 
 **The handled ledger.** A JSON file next to the work: `figma/comments-handled.json` in a campaign folder, otherwise `figma-comments-handled.json` in the working directory. Read it at the start of every review, including in a new conversation.
 
@@ -299,19 +299,7 @@ Comments are per file. Moving content to a new file leaves them behind.
 { "<file_key>": { "<comment_id>": { "handled_at": "2026-11-03T14:05:00Z", "change": "logo 20% bigger on 1080x1920" } } }
 ```
 
-**Deleting.** This needs the **File comments: Write** scope, and Figma lets a token delete only comments written by its owner. Delete each handled comment, replies included:
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" -X DELETE -H "X-Figma-Token: $(cat ~/.figma-token)" \
-  "https://api.figma.com/v1/files/$KEY/comments/$ID"
-```
-
-Read the status codes:
-- **200:** deleted.
-- **404:** already gone, for example a reply that went with its thread.
-- **403:** someone else's comment, or a token without write scope. Keep it in the ledger, and ask its author to resolve it.
-
-There is no API endpoint for resolving a comment.
+There is no API endpoint for resolving a comment, so resolving stays with the person.
 
 **When to ask for a re-import** (plugin route only): when the toast shows a stale stamp, or "replaced 0" while frames are visible. Ask them to remove the plugin, import its `manifest.json` again and reopen the tab. If that fails, change the manifest `id` (see *One plugin, one job*).
 
